@@ -14,6 +14,27 @@ from pydub import AudioSegment
 from pydub.playback import play
 from transformers import MarianMTModel, MarianTokenizer
 
+class initialize:
+    def init_transcription_model():
+        model_path = Transcription.construct_model_path()
+        model = Transcription.initialize_transcription_model(model_path)
+        return model
+    
+    def init_nlp_model(language):
+        nlp = TextProcessing.load_spacy_model(language)
+        return nlp
+    
+    def init_recognizer(model, samplerate):
+        recognizer = Transcription.initialize_recognizer(model, samplerate)
+        return recognizer
+    
+    def init_buffering_variables():
+        return Utilities.initialize_buffering_variables()
+    
+    def init_translation_and_tts(args):
+        translate_queue, tts_queue = Utilities.initialize_translation_and_tts(args)
+        return translate_queue, tts_queue
+
 class Transcription: 
     @staticmethod
     def _int_or_str(text):
@@ -263,17 +284,17 @@ class Utilities:
 
 def main():
 
-    # Initialize variables
-    model_path = Transcription.construct_model_path() # Initialize model path for transcription
     args = Utilities.parse_arguments()  # Parse the command-line arguments
-    model = Transcription.initialize_transcription_model(model_path) # Initialize transcription model
-    nlp = TextProcessing.load_spacy_model(args.language) # initialize the punctuation model
+    
+    # Initialize variables
+    model = initialize.init_transcription_model()  # Initialize transcription model
+    nlp = initialize.init_nlp_model(args.language)  # Initialize the NLP model
     args.samplerate = Utilities.determine_sample_rate(args)  # Determine the appropriate sample rate
-    q = queue.Queue() # Create a queue to store audio data
-    audio_callback = Transcription.create_audio_callback(q) # Define the audio callback function
-    recognizer = Transcription.initialize_recognizer(model, args.samplerate) # Initialize the Vosk recognizer
-    buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials = Utilities.initialize_buffering_variables() # Initialize variables for buffering audio and text
-    translate_queue, tts_queue = Utilities.initialize_translation_and_tts(args) # Initialize translation model
+    q = queue.Queue()  # Create a queue to store audio data
+    audio_callback = Transcription.create_audio_callback(q)  # Define the audio callback function
+    recognizer = initialize.init_recognizer(model, args.samplerate)  # Initialize the recognizer
+    buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials = initialize.init_buffering_variables()  # Initialize variables for buffering audio and text
+    translate_queue, tts_queue = initialize.init_translation_and_tts(args)  # Initialize translation and TTS models
 
     try:
         with sd.RawInputStream(

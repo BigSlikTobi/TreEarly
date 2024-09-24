@@ -34,7 +34,19 @@ class initialize:
     def init_translation_and_tts(args):
         translate_queue, tts_queue = Utilities.initialize_translation_and_tts(args)
         return translate_queue, tts_queue
+    
+    def init_system(args):
+        model = initialize.init_transcription_model()  # Initialize transcription model
+        nlp = initialize.init_nlp_model(args.language) # Initialize the NLP model
+        args.samplerate = Utilities.determine_sample_rate(args) # Determine the appropriate sample rate
+        q = queue.Queue() # Create a queue to store audio data
+        audio_callback = Transcription.create_audio_callback(q) # Define the audio callback function
+        recognizer = initialize.init_recognizer(model, args.samplerate) # Initialize the recognizer
+        buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials = initialize.init_buffering_variables() # Initialize variables for buffering audio and text
+        translate_queue, tts_queue = initialize.init_translation_and_tts(args) # Initialize translation and TTS models
 
+        return model, nlp, args.samplerate, q, audio_callback, recognizer, buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials, translate_queue, tts_queue
+    
 class Transcription: 
     @staticmethod
     def _int_or_str(text):
@@ -201,6 +213,103 @@ class TextToSpeech:
             TextToSpeech.synthesize_speech(text, target_lang)
             tts_queue.task_done()
 
+class AudioRecording:
+
+    def __init__(
+            self,
+            recognizer,
+            q,
+            nlp,
+            pause_threshold,
+            translate_queue,
+            tts_queue,
+            args,
+        ):
+            self.recognizer = recognizer
+            self.q = q
+            self.nlp = nlp
+            self.pause_threshold = pause_threshold
+            self.translate_queue = translate_queue
+            self.tts_queue = tts_queue
+            self.args = args
+
+            # Initialize variables
+            self.buffer_text = ""
+            self.last_audio_time = time.time()
+            self.last_processed_text = ""
+            self.processed_partials = set()
+
+    def process_audio(self):
+        print("#" * 80)
+        print("Press Ctrl+C to stop the transcription")
+        print("#" * 80)
+        try:
+            while True:
+                data = self.q.get()
+                current_time = time.time()
+
+                if self.recognizer.AcceptWaveform(data):
+                    result = self.recognizer.Result()
+                    try:
+                        result_dict = json.loads(result)
+                        text = result_dict.get("text", "")
+                        if text:
+                            print(f"Final result: {text}")
+                            self.buffer_text += " " + text
+                            self.last_audio_time = current_time
+                            self.last_processed_text = ""
+                            self.processed_partials.clear()  # Clear set after final result
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing recognizer result: {e}")
+                else:
+                    partial_result = self.recognizer.PartialResult()
+                    try:
+                        partial_dict = json.loads(partial_result)
+                        partial_text = partial_dict.get("partial", "")
+                        if partial_text and partial_text not in self.processed_partials:
+                            if partial_text.startswith(self.last_processed_text):
+                                new_text = partial_text[len(self.last_processed_text):].strip()
+                            else:
+                                new_text = partial_text.strip()
+                            self.buffer_text += " " + new_text
+                            self.last_processed_text = partial_text
+                            self.processed_partials.add(partial_text)  # Add to set of processed partials
+                            self.last_audio_time = current_time
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing partial result: {e}")
+
+                # Check for pause
+                if current_time - self.last_audio_time > self.pause_threshold and self.buffer_text:
+                    if self.nlp:
+                        punctuated_text = TextProcessing.add_punctuation_spacy(self.buffer_text, self.nlp)
+                    else:
+                        punctuated_text = self.buffer_text.strip()
+
+                    if self.args.translate and self.translate_queue:
+                        self.translate_queue.put(punctuated_text)
+
+                    self.buffer_text = ""  # Clear the buffer after processing
+                    self.last_processed_text = ""  # Reset the last processed text
+
+        except KeyboardInterrupt:
+            print("\nTranscription stopped by user.")
+        except Exception as e:
+            print(f"An error occurred during processing: {e}")
+
+    def start_audio_stream(self, samplerate, blocksize, device, dtype, channels, callback):
+        try:
+            with sd.RawInputStream(
+                samplerate=samplerate,
+                blocksize=blocksize,
+                device=device,
+                dtype=dtype,
+                channels=channels,
+                callback=callback,
+            ):
+                self.process_audio()
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            
 class Utilities:
     @staticmethod
     def determine_sample_rate(args):
@@ -285,92 +394,42 @@ class Utilities:
 def main():
 
     args = Utilities.parse_arguments()  # Parse the command-line arguments
-    
-    # Initialize variables
-    model = initialize.init_transcription_model()  # Initialize transcription model
-    nlp = initialize.init_nlp_model(args.language)  # Initialize the NLP model
-    args.samplerate = Utilities.determine_sample_rate(args)  # Determine the appropriate sample rate
-    q = queue.Queue()  # Create a queue to store audio data
-    audio_callback = Transcription.create_audio_callback(q)  # Define the audio callback function
-    recognizer = initialize.init_recognizer(model, args.samplerate)  # Initialize the recognizer
-    buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials = initialize.init_buffering_variables()  # Initialize variables for buffering audio and text
-    translate_queue, tts_queue = initialize.init_translation_and_tts(args)  # Initialize translation and TTS models
+   
+    (
+        model, 
+        nlp, 
+        samplerate, 
+        q, 
+        audio_callback, 
+        recognizer, 
+        buffer_text, 
+        last_audio_time, 
+        pause_threshold, 
+        last_processed_text, 
+        processed_partials, 
+        translate_queue, 
+        tts_queue 
+        ) = initialize.init_system(args)  # Initialize variables and models
+
+    audio_processor = AudioRecording(
+        recognizer=recognizer,
+        q=q,
+        nlp=nlp,
+        pause_threshold=pause_threshold,
+        translate_queue=translate_queue,
+        tts_queue=tts_queue,
+        args=args,
+    )
 
     try:
-        with sd.RawInputStream(
+        audio_processor.start_audio_stream(
             samplerate=args.samplerate,
             blocksize=8000,
             device=args.device,
             dtype="int16",
             channels=1,
             callback=audio_callback,
-        ):
-            print("#" * 80)
-            print("Press Ctrl+C to stop the transcription")
-            print("#" * 80)
-
-            while True:
-                data = q.get()
-                current_time = time.time()
-                # print(f"Processing audio chunk at {current_time}")  # Debug print
-
-                if recognizer.AcceptWaveform(data):
-                    result = recognizer.Result()
-                    # print(f"Recognizer result: {result}")  # Debug print
-                    try:
-                        result_dict = json.loads(result)
-                        text = result_dict.get("text", "")
-                        if text:
-                            print(f"Final result: {text}")
-                            buffer_text += " " + text
-                            last_audio_time = current_time
-                            last_processed_text = ""
-                            processed_partials.clear() # Clear set after final result
-                            #print(f"Reset last_processed_text: {last_processed_text}")  # Debug print
-                    except json.JSONDecodeError as e:
-                        print(f"Error parsing recognizer result: {e}")
-                else:
-                    partial_result = recognizer.PartialResult()
-                    #print(f"Partial result: {partial_result}")  # Debug print
-                    try:
-                        partial_dict = json.loads(partial_result)
-                        partial_text = partial_dict.get("partial", "")
-                        # print(f"Partial text: {partial_text}")  # Debug print
-                        # print(f"Last processed text: {last_processed_text}")  # Debug print
-                        if partial_text and partial_text not in processed_partials:
-                            if partial_text.startswith(last_processed_text):
-                                new_text = partial_text[len(last_processed_text):].strip()
-                            else:
-                                new_text = partial_text.strip()
-                            buffer_text += " " + new_text
-                            last_processed_text = partial_text
-                            processed_partials.add(partial_text)  # Add to set of processed partials
-                            last_audio_time = current_time
-                            print(f"Updated last_processed_text: {last_processed_text}")  # Debug print
-                    except json.JSONDecodeError as e:
-                        print(f"Error parsing partial result: {e}")
-
-                # Check for pause
-                if current_time - last_audio_time > pause_threshold and buffer_text:
-                    #print(f"\nDetected pause. Processing buffer...\n")  # Debug print
-                    if nlp:
-                        punctuated_text = TextProcessing.add_punctuation_spacy(buffer_text, nlp)
-                    else:
-                        punctuated_text = buffer_text.strip()
-
-                    #print(f"Transcribed: {punctuated_text}")
-
-                    if args.translate and translate_queue:
-                        translate_queue.put(punctuated_text)
-                        #print("Enqueued text for translation.")
-
-                    buffer_text = ""  # Clear the buffer after processing
-                    last_processed_text = ""  # Reset the last processed text
-
-    except KeyboardInterrupt:
-        print("\nTranscription stopped by user.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        )
     finally:
         if args.translate and translate_queue:
             if translate_queue:

@@ -239,13 +239,15 @@ class AudioRecording:
             self.last_processed_text = ""
             self.processed_partials = set()
 
-    def process_audio(self):
-        print("#" * 80)
-        print("Press Ctrl+C to stop the transcription")
-        print("#" * 80)
+    def process_audio_worker(self):
+        print("Processing worker thread started.")
         try:
             while True:
                 data = self.q.get()
+                if data is None:
+                    print("Processing worker received exit signal.")
+                    break  # Exit signal
+
                 current_time = time.time()
 
                 if self.recognizer.AcceptWaveform(data):
@@ -291,25 +293,30 @@ class AudioRecording:
                     self.buffer_text = ""  # Clear the buffer after processing
                     self.last_processed_text = ""  # Reset the last processed text
 
-        except KeyboardInterrupt:
-            print("\nTranscription stopped by user.")
+                self.q.task_done()
         except Exception as e:
             print(f"An error occurred during processing: {e}")
 
     def start_audio_stream(self, samplerate, blocksize, device, dtype, channels, callback):
-        try:
-            with sd.RawInputStream(
-                samplerate=samplerate,
-                blocksize=blocksize,
-                device=device,
-                dtype=dtype,
-                channels=channels,
-                callback=callback,
-            ):
-                self.process_audio()
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            
+            try:
+                with sd.RawInputStream(
+                    samplerate=samplerate,
+                    blocksize=blocksize,
+                    device=device,
+                    dtype=dtype,
+                    channels=channels,
+                    callback=callback,
+                ):
+                    print("Audio stream started.")
+                    print("Press Ctrl+C to stop.")
+                    print("Listening...")
+                    while True:
+                        time.sleep(0.1) # Keep the main thread alive
+            except KeyboardInterrupt:
+                print("Stopping audio stream...")
+            except Exception as e:
+                print(f"An error occurred: {e}")
+
 class Utilities:
     @staticmethod
     def determine_sample_rate(args):
@@ -421,6 +428,14 @@ def main():
         args=args,
     )
 
+    # Start the audio processing worker thread
+    processing_thread = threading.Thread(
+        target=audio_processor.process_audio_worker,
+        daemon=True
+    )
+    processing_thread.start()
+    print("Processing worker thread started.")
+
     try:
         audio_processor.start_audio_stream(
             samplerate=args.samplerate,
@@ -431,6 +446,11 @@ def main():
             callback=audio_callback,
         )
     finally:
+        # Signaling the processing thread to exit
+        q.put(None)
+        processing_thread.join()
+        print("Processing worker thread stopped.")
+        
         if args.translate and translate_queue:
             if translate_queue:
                 translate_queue.put(None)  # Signal the translator thread to exit

@@ -4,3 +4,4 @@ vosk == 0.3.44
 gtts == 2.5.3
 pydub == 0.25.1 
 transformers == 4.31.0
+torch == 1.10.2

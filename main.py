@@ -42,10 +42,10 @@ class initialize:
         q = queue.Queue() # Create a queue to store audio data
         audio_callback = Transcription.create_audio_callback(q) # Define the audio callback function
         recognizer = initialize.init_recognizer(model, args.samplerate) # Initialize the recognizer
-        buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials = initialize.init_buffering_variables() # Initialize variables for buffering audio and text
+        buffer_text, last_audio_time, pause_threshold = initialize.init_buffering_variables() # Initialize variables for buffering audio and text
         translate_queue, tts_queue = initialize.init_translation_and_tts(args) # Initialize translation and TTS models
 
-        return model, nlp, args.samplerate, q, audio_callback, recognizer, buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials, translate_queue, tts_queue
+        return model, nlp, args.samplerate, q, audio_callback, recognizer, buffer_text, last_audio_time, pause_threshold, translate_queue, tts_queue
     
 class Transcription: 
     @staticmethod
@@ -236,8 +236,8 @@ class AudioRecording:
             # Initialize variables
             self.buffer_text = ""
             self.last_audio_time = time.time()
-            self.last_processed_text = ""
-            self.processed_partials = set()
+            self.final_text = ""
+            self.partial_words = []
 
     def process_audio_worker(self):
         print("Processing worker thread started.")
@@ -257,10 +257,10 @@ class AudioRecording:
                         text = result_dict.get("text", "")
                         if text:
                             print(f"Final result: {text}")
-                            self.buffer_text += " " + text
+                            self.final_text += " " + text # Accumulate final text
+                            self.buffer_text = ""  # Clear Buffer
+                            self.partial_words = []  # Clear partial words
                             self.last_audio_time = current_time
-                            self.last_processed_text = ""
-                            self.processed_partials.clear()  # Clear set after final result
                     except json.JSONDecodeError as e:
                         print(f"Error parsing recognizer result: {e}")
                 else:
@@ -268,30 +268,37 @@ class AudioRecording:
                     try:
                         partial_dict = json.loads(partial_result)
                         partial_text = partial_dict.get("partial", "")
-                        if partial_text and partial_text not in self.processed_partials:
-                            if partial_text.startswith(self.last_processed_text):
-                                new_text = partial_text[len(self.last_processed_text):].strip()
-                            else:
-                                new_text = partial_text.strip()
-                            self.buffer_text += " " + new_text
-                            self.last_processed_text = partial_text
-                            self.processed_partials.add(partial_text)  # Add to set of processed partials
+                        if partial_text:
+                            current_partial_words = partial_text.strip().split()  # Split the partial text into words
+                            new_word_index = 0 # Index of the new word
+                            for i in range(min(len(self.partial_words), len(current_partial_words))):
+                                if self.partial_words[i] != current_partial_words[i]:
+                                    new_word_index = i
+                                    break
+                                new_word_index = i+ 1 # Increment the index to get the new word
+                            new_words = current_partial_words[new_word_index:]
+                            if new_words:
+                                self.buffer_text += " " + " ".join(new_words)  # Accumulate buffer text
+                            self.partial_words = current_partial_words
+                            #self.buffer_text = partial_text
                             self.last_audio_time = current_time
                     except json.JSONDecodeError as e:
                         print(f"Error parsing partial result: {e}")
 
                 # Check for pause
-                if current_time - self.last_audio_time > self.pause_threshold and self.buffer_text:
+                if (current_time - self.last_audio_time > self.pause_threshold) and (self.final_text or self.buffer_text):
+                    full_text = (self.final_text + " " + self.buffer_text).strip()
                     if self.nlp:
-                        punctuated_text = TextProcessing.add_punctuation_spacy(self.buffer_text, self.nlp)
+                        punctuated_text = TextProcessing.add_punctuation_spacy(full_text, self.nlp)
                     else:
-                        punctuated_text = self.buffer_text.strip()
+                        punctuated_text = full_text
 
                     if self.args.translate and self.translate_queue:
                         self.translate_queue.put(punctuated_text)
 
+                    self.final_text = ""  # Clear the final text after processing
                     self.buffer_text = ""  # Clear the buffer after processing
-                    self.last_processed_text = ""  # Reset the last processed text
+                    self.partial_words = [] # Clear partial words after processing
 
                 self.q.task_done()
         except Exception as e:
@@ -366,9 +373,9 @@ class Utilities:
         buffer_text = ""
         last_audio_time = time.time()
         pause_threshold = 0.3
-        last_processed_text = ""
-        processed_partials = set()
-        return buffer_text, last_audio_time, pause_threshold, last_processed_text, processed_partials  
+        #last_processed_text = ""
+        #processed_partials = set()
+        return buffer_text, last_audio_time, pause_threshold, 
 
     @staticmethod
     def parse_arguments():
@@ -401,9 +408,7 @@ class Utilities:
 def main():
 
     args = Utilities.parse_arguments()  # Parse the command-line arguments
-   
-    (
-        model, 
+    (   model, 
         nlp, 
         samplerate, 
         q, 
@@ -412,8 +417,6 @@ def main():
         buffer_text, 
         last_audio_time, 
         pause_threshold, 
-        last_processed_text, 
-        processed_partials, 
         translate_queue, 
         tts_queue 
         ) = initialize.init_system(args)  # Initialize variables and models
@@ -450,7 +453,7 @@ def main():
         q.put(None)
         processing_thread.join()
         print("Processing worker thread stopped.")
-        
+
         if args.translate and translate_queue:
             if translate_queue:
                 translate_queue.put(None)  # Signal the translator thread to exit

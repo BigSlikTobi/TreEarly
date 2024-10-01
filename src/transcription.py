@@ -144,7 +144,7 @@ class TranscriptionStreaming:
         self.processing_thread.join()
 
 class TranscriptionChunking:
-    def __init__(self, model_name='openai/whisper-tiny', language='english', chunk_duration=5, device=None, translate_queue=None, tts_queue=None):
+    def __init__(self, model_name='openai/whisper-tiny.en', language='english', chunk_duration=1.0, device=None, translate_queue=None, tts_queue=None):
         self.processor = WhisperProcessor.from_pretrained(model_name, language=language, task="transcribe")
         self.model = WhisperForConditionalGeneration.from_pretrained(model_name)
         self.model.eval()
@@ -189,7 +189,7 @@ class TranscriptionChunking:
                     input_features = input_features.to(self.device)
                     # Generate transcription
                     with torch.no_grad():
-                        predicted_ids = self.model.generate(input_features)
+                        predicted_ids = self.model.generate(input_features, temperature=0.0)
                     transcription = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
                     print(f"Transcribed text: {transcription}")
                     # Send to translation queue if enabled

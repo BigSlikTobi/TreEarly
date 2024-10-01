@@ -87,6 +87,14 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+    if args.language == "en": 
+        modelName = "openai/whisper-tiny.en"
+    elif args.language == "de":
+        modelName = "daveni/whisper-tiny-commonvoice_v11-de"
+    elif args.language == "es":
+        modelName = "zuazo/whisper-tiny-es"
+    else: 
+        modelName = "openai/whisper-tiny"
 
     # Initialize translation and TTS queues and threads if needed
     if args.translate:
@@ -150,7 +158,7 @@ def main():
     else:
         # Initialize Whisper transcription
         transcription = TranscriptionChunking(
-            model_name='openai/whisper-tiny',
+            model_name = modelName,
             language=args.language,
             chunk_duration=5,
             device=args.device,

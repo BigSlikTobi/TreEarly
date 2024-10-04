@@ -3,75 +3,11 @@ import queue
 import sys
 import threading
 import time
-import tempfile
-
 import sounddevice as sd
-from gtts import gTTS
-from pydub import AudioSegment
-from pydub.playback import play
-from transformers import MarianMTModel, MarianTokenizer
 
 from src.transcription import TranscriptionStreaming, TranscriptionChunking
-
-class Translation:
-    @staticmethod
-    def load_translation_model(src_lang="en", tgt_lang="de"):
-        model_name = f'Helsinki-NLP/opus-mt-{src_lang}-{tgt_lang}'
-        try:
-            tokenizer = MarianTokenizer.from_pretrained(model_name)
-            model = MarianMTModel.from_pretrained(model_name)
-            print(f"Translation model {model_name} loaded successfully.")
-            return tokenizer, model
-        except Exception as e:
-            print(f"Could not load translation model {model_name}: {e}")
-            sys.exit(1)
-
-    @staticmethod
-    def translate_text(text, tokenizer, model):
-        try:
-            inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-            translated_tokens = model.generate(**inputs)
-            tgt_text = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0]
-            return tgt_text
-        except Exception as e:
-            print(f"Translation error: {e}")
-            return ""
-
-    @staticmethod
-    def translation_worker(translate_queue, tokenizer, model, target_language, tts_queue=None):
-        while True:
-            text = translate_queue.get()
-            if text is None:
-                print("Translation worker received exit signal.")
-                break
-            translated_text = Translation.translate_text(text, tokenizer, model)
-            if translated_text:
-                print(f"\nTranslated ({target_language}): {translated_text}\n")
-                if tts_queue:
-                    tts_queue.put(translated_text)
-            translate_queue.task_done()
-
-class TextToSpeech:
-    @staticmethod
-    def synthesize_speech(text, target_lang):
-        try:
-            tts = gTTS(text, lang=target_lang)
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as fp:
-                tts.save(fp.name)
-                audio = AudioSegment.from_file(fp.name, format="mp3")
-                play(audio)
-        except Exception as e:
-            print(f"TTS error: {e}")
-
-    @staticmethod
-    def tts_worker(tts_queue, target_lang):
-        while True:
-            text = tts_queue.get()
-            if text is None:
-                print("TTS worker received exit signal.")
-                break
-            TextToSpeech.synthesize_speech(text, target_lang)
-            tts_queue.task_done()
+from src.translation import Translation
+from src.tts import TextToSpeech
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Realtime Speech to Text with Translation")
@@ -108,8 +44,12 @@ def main():
             args=(translate_queue, tokenizer, translation_model, args.target_lang, tts_queue),
             daemon=True
         )
-        translator_thread.start()
-        print("Translation worker thread started.")
+        try: 
+            translator_thread.start()
+            print("Translation worker thread started.")
+        except Exception as e:
+            print(f"Could not load translation model {e}")
+            sys.exit(1)
 
         # Start the TTS worker thread
         tts_thread = threading.Thread(
